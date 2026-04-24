@@ -17,7 +17,7 @@ load("listings.RData")
 
 ## Preparación de los Datos y Conjuntos de Entrenamiento y Prueba
 
-Para garantizar la comparabilidad con los modelos generados en laboratorios anteriores, se reutiliza exactamente la misma semilla, partición y lógica de categorización de precios. El conjunto de datos se divide en un 70% para entrenamiento y un 30% para prueba, usando `set.seed(123)`, preservando así la reproducibilidad del análisis.
+Para garantizar la comparabilidad con los modelos generados en informes anteriores, se reutiliza exactamente la misma semilla, partición y lógica de categorización de precios. El conjunto de datos se divide en un 70% para entrenamiento y un 30% para prueba, usando `set.seed(123)`, preservando así la reproducibilidad del análisis.
 
 ```{r preparacion, echo=FALSE, warning=FALSE}
 colmutils <- c(
@@ -129,8 +129,19 @@ test_scaled  <- predict(preproc, test_encoded)
 train_scaled$categoria_precio <- train_svm_raw$categoria_precio
 test_scaled$categoria_precio  <- test_svm_raw$categoria_precio
 
-cat("Dimensiones finales - Entrenamiento:", dim(train_scaled), "\n")
-cat("Dimensiones finales - Prueba:", dim(test_scaled), "\n")
+# Subsampleo para SVM: máximo 2000 observaciones de entrenamiento
+# SVM tiene complejidad O(n²)-O(n³); con el dataset completo el tiempo
+# de convergencia es prohibitivo. La muestra estratificada preserva
+# la proporción de clases y es suficiente para estimar los parámetros.
+set.seed(123)
+idx_sample   <- sample(1:nrow(train_scaled), min(2000, nrow(train_scaled)))
+train_svm_s  <- train_scaled[idx_sample, ]
+
+cat("Dimensiones finales - Entrenamiento (completo):", dim(train_scaled), "\n")
+cat("Dimensiones finales - Submuestra SVM:          ", dim(train_svm_s),  "\n")
+cat("Dimensiones finales - Prueba:                  ", dim(test_scaled),  "\n")
+cat("\nDistribución de clases en submuestra:\n")
+print(table(train_svm_s$categoria_precio))
 ```
 
 **Transformaciones aplicadas:**
@@ -139,6 +150,7 @@ cat("Dimensiones finales - Prueba:", dim(test_scaled), "\n")
 2. **Selección de variables**: Se excluyeron identificadores geográficos de alta cardinalidad (`neighbourhood_cleansed`, `latitude`, `longitude`) que introducirían ruido sin aportar poder predictivo generalizable.
 3. **Codificación one-hot de `room_type`**: La variable categórica se convirtió en columnas binarias para que el kernel pueda calcular distancias de manera coherente.
 4. **Normalización (centrado y escalado)**: Todas las variables numéricas se estandarizaron a media 0 y desviación estándar 1. Esto es **indispensable** para SVM, ya que el algoritmo maximiza márgenes en el espacio de características y una variable con rango amplio (como `minimum_nights`) dominaría artificialmente sobre otras de escala menor (como `review_scores_rating`).
+5. **Submuestreo estratégico del entrenamiento**: SVM tiene complejidad computacional O(n²) a O(n³) respecto al número de observaciones. Para hacer el entrenamiento viable en tiempo razonable, se selecciona una muestra aleatoria de 2,000 observaciones del conjunto de entrenamiento. La evaluación final se realiza sobre el conjunto de prueba **completo**, preservando la validez de las métricas de generalización.
 
 ---
 
@@ -152,16 +164,18 @@ Se entrenan cuatro modelos SVM con distintos kernels y configuraciones de hiperp
 set.seed(123)
 modelo_svm_lineal <- svm(
   categoria_precio ~ .,
-  data   = train_scaled,
-  kernel = "linear",
-  cost   = 1,
-  scale  = FALSE  # ya escalamos manualmente
+  data      = train_svm_s,
+  kernel    = "linear",
+  cost      = 1,
+  scale     = FALSE,     # ya escalamos manualmente
+  cachesize = 500,       # MB de cache (default 40 es muy bajo)
+  tolerance = 0.01       # criterio de convergencia más holgado = más rápido
 )
 
-pred_lineal_train <- predict(modelo_svm_lineal, train_scaled)
+pred_lineal_train <- predict(modelo_svm_lineal, train_svm_s)
 pred_lineal_test  <- predict(modelo_svm_lineal, test_scaled)
 
-cm_lineal_train <- confusionMatrix(pred_lineal_train, train_scaled$categoria_precio)
+cm_lineal_train <- confusionMatrix(pred_lineal_train, train_svm_s$categoria_precio)
 cm_lineal_test  <- confusionMatrix(pred_lineal_test,  test_scaled$categoria_precio)
 
 cat("=== Kernel Lineal (C = 1) ===\n")
@@ -175,17 +189,19 @@ cat("Accuracy en prueba:       ", round(cm_lineal_test$overall["Accuracy"],  4),
 set.seed(123)
 modelo_svm_rbf1 <- svm(
   categoria_precio ~ .,
-  data   = train_scaled,
-  kernel = "radial",
-  cost   = 1,
-  gamma  = 0.01,
-  scale  = FALSE
+  data      = train_svm_s,
+  kernel    = "radial",
+  cost      = 1,
+  gamma     = 0.01,
+  scale     = FALSE,
+  cachesize = 500,
+  tolerance = 0.01
 )
 
-pred_rbf1_train <- predict(modelo_svm_rbf1, train_scaled)
+pred_rbf1_train <- predict(modelo_svm_rbf1, train_svm_s)
 pred_rbf1_test  <- predict(modelo_svm_rbf1, test_scaled)
 
-cm_rbf1_train <- confusionMatrix(pred_rbf1_train, train_scaled$categoria_precio)
+cm_rbf1_train <- confusionMatrix(pred_rbf1_train, train_svm_s$categoria_precio)
 cm_rbf1_test  <- confusionMatrix(pred_rbf1_test,  test_scaled$categoria_precio)
 
 cat("=== Kernel RBF (C = 1, gamma = 0.01) ===\n")
@@ -199,17 +215,19 @@ cat("Accuracy en prueba:       ", round(cm_rbf1_test$overall["Accuracy"],  4), "
 set.seed(123)
 modelo_svm_rbf2 <- svm(
   categoria_precio ~ .,
-  data   = train_scaled,
-  kernel = "radial",
-  cost   = 10,
-  gamma  = 0.1,
-  scale  = FALSE
+  data      = train_svm_s,
+  kernel    = "radial",
+  cost      = 10,
+  gamma     = 0.1,
+  scale     = FALSE,
+  cachesize = 500,
+  tolerance = 0.01
 )
 
-pred_rbf2_train <- predict(modelo_svm_rbf2, train_scaled)
+pred_rbf2_train <- predict(modelo_svm_rbf2, train_svm_s)
 pred_rbf2_test  <- predict(modelo_svm_rbf2, test_scaled)
 
-cm_rbf2_train <- confusionMatrix(pred_rbf2_train, train_scaled$categoria_precio)
+cm_rbf2_train <- confusionMatrix(pred_rbf2_train, train_svm_s$categoria_precio)
 cm_rbf2_test  <- confusionMatrix(pred_rbf2_test,  test_scaled$categoria_precio)
 
 cat("=== Kernel RBF (C = 10, gamma = 0.1) ===\n")
@@ -223,17 +241,19 @@ cat("Accuracy en prueba:       ", round(cm_rbf2_test$overall["Accuracy"],  4), "
 set.seed(123)
 modelo_svm_poly <- svm(
   categoria_precio ~ .,
-  data   = train_scaled,
-  kernel = "polynomial",
-  cost   = 1,
-  degree = 3,
-  scale  = FALSE
+  data      = train_svm_s,
+  kernel    = "polynomial",
+  cost      = 1,
+  degree    = 3,
+  scale     = FALSE,
+  cachesize = 500,
+  tolerance = 0.01
 )
 
-pred_poly_train <- predict(modelo_svm_poly, train_scaled)
+pred_poly_train <- predict(modelo_svm_poly, train_svm_s)
 pred_poly_test  <- predict(modelo_svm_poly, test_scaled)
 
-cm_poly_train <- confusionMatrix(pred_poly_train, train_scaled$categoria_precio)
+cm_poly_train <- confusionMatrix(pred_poly_train, train_svm_s$categoria_precio)
 cm_poly_test  <- confusionMatrix(pred_poly_test,  test_scaled$categoria_precio)
 
 cat("=== Kernel Polinomial (C = 1, d = 3) ===\n")
@@ -245,93 +265,154 @@ cat("Accuracy en prueba:       ", round(cm_poly_test$overall["Accuracy"],  4), "
 
 ## Matrices de Confusión
 
-Las matrices de confusión permiten evaluar el comportamiento del clasificador más allá de la exactitud global, identificando qué clases se confunden con mayor frecuencia.
+Las matrices de confusión permiten evaluar el comportamiento del clasificador más allá de la exactitud global, identificando qué clases se confunden con mayor frecuencia. Se presenta tanto la versión numérica como una visualización de mapa de calor para facilitar la interpretación.
+
+```{r funcion_cm_visual, echo=FALSE, warning=FALSE}
+# Función reutilizable para graficar matrices de confusión
+plot_cm <- function(cm, titulo) {
+  df <- as.data.frame(cm$table)
+  colnames(df) <- c("Predicho", "Real", "Frecuencia")
+  
+  # Proporciones por clase real (para mostrar % sobre el total de cada columna real)
+  df <- df %>%
+    group_by(Real) %>%
+    mutate(Porcentaje = round(Frecuencia / sum(Frecuencia) * 100, 1)) %>%
+    ungroup()
+  
+  ggplot(df, aes(x = Real, y = Predicho, fill = Frecuencia)) +
+    geom_tile(color = "white", linewidth = 0.8) +
+    geom_text(aes(label = paste0(Frecuencia, "\n(", Porcentaje, "%)")),
+              size = 4, fontface = "bold", color = "white") +
+    scale_fill_gradient(low = "#A8DADC", high = "#1D3557") +
+    labs(title = titulo,
+         x = "Clase Real", y = "Clase Predicha", fill = "N") +
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title   = element_text(face = "bold", hjust = 0.5, size = 12),
+      axis.text    = element_text(size = 10),
+      legend.position = "right"
+    )
+}
+```
 
 ### Kernel Lineal
 
-```{r cm_lineal, echo=FALSE, warning=FALSE}
-cat("--- Matriz de Confusión en PRUEBA — Kernel Lineal ---\n")
-print(cm_lineal_test$table)
-cat("\nMétricas por clase:\n")
-print(round(cm_lineal_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1")], 4))
+```{r cm_lineal, echo=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+plot_cm(cm_lineal_test, "Matriz de Confusión — Kernel Lineal (C = 1)")
+```
+
+```{r metricas_lineal, echo=FALSE, warning=FALSE}
+knitr::kable(
+  round(cm_lineal_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1", "Balanced Accuracy")], 4),
+  caption = "Métricas por clase — Kernel Lineal"
+)
+cat("Kappa:", round(cm_lineal_test$overall["Kappa"], 4),
+    "| Accuracy:", round(cm_lineal_test$overall["Accuracy"], 4), "\n")
 ```
 
 ### Kernel RBF (C = 1, gamma = 0.01)
 
-```{r cm_rbf1, echo=FALSE, warning=FALSE}
-cat("--- Matriz de Confusión en PRUEBA — Kernel RBF (C=1, gamma=0.01) ---\n")
-print(cm_rbf1_test$table)
-cat("\nMétricas por clase:\n")
-print(round(cm_rbf1_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1")], 4))
+```{r cm_rbf1, echo=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+plot_cm(cm_rbf1_test, "Matriz de Confusión — Kernel RBF (C = 1, γ = 0.01)")
+```
+
+```{r metricas_rbf1, echo=FALSE, warning=FALSE}
+knitr::kable(
+  round(cm_rbf1_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1", "Balanced Accuracy")], 4),
+  caption = "Métricas por clase — Kernel RBF (C=1, γ=0.01)"
+)
+cat("Kappa:", round(cm_rbf1_test$overall["Kappa"], 4),
+    "| Accuracy:", round(cm_rbf1_test$overall["Accuracy"], 4), "\n")
 ```
 
 ### Kernel RBF (C = 10, gamma = 0.1)
 
-```{r cm_rbf2, echo=FALSE, warning=FALSE}
-cat("--- Matriz de Confusión en PRUEBA — Kernel RBF (C=10, gamma=0.1) ---\n")
-print(cm_rbf2_test$table)
-cat("\nMétricas por clase:\n")
-print(round(cm_rbf2_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1")], 4))
+```{r cm_rbf2, echo=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+plot_cm(cm_rbf2_test, "Matriz de Confusión — Kernel RBF (C = 10, γ = 0.1)")
+```
+
+```{r metricas_rbf2, echo=FALSE, warning=FALSE}
+knitr::kable(
+  round(cm_rbf2_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1", "Balanced Accuracy")], 4),
+  caption = "Métricas por clase — Kernel RBF (C=10, γ=0.1)"
+)
+cat("Kappa:", round(cm_rbf2_test$overall["Kappa"], 4),
+    "| Accuracy:", round(cm_rbf2_test$overall["Accuracy"], 4), "\n")
 ```
 
 ### Kernel Polinomial (d = 3)
 
-```{r cm_poly, echo=FALSE, warning=FALSE}
-cat("--- Matriz de Confusión en PRUEBA — Kernel Polinomial (C=1, d=3) ---\n")
-print(cm_poly_test$table)
-cat("\nMétricas por clase:\n")
-print(round(cm_poly_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1")], 4))
+```{r cm_poly, echo=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+plot_cm(cm_poly_test, "Matriz de Confusión — Kernel Polinomial (C = 1, d = 3)")
+```
+
+```{r metricas_poly, echo=FALSE, warning=FALSE}
+knitr::kable(
+  round(cm_poly_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1", "Balanced Accuracy")], 4),
+  caption = "Métricas por clase — Kernel Polinomial (d=3)"
+)
+cat("Kappa:", round(cm_poly_test$overall["Kappa"], 4),
+    "| Accuracy:", round(cm_poly_test$overall["Accuracy"], 4), "\n")
 ```
 
 ---
 
 ## Comparación de Modelos y Análisis de Sobreajuste
 
-```{r comparacion_modelos, echo=FALSE, warning=FALSE}
-resumen <- data.frame(
-  Modelo = c(
-    "Lineal (C=1)",
-    "RBF (C=1, g=0.01)",
-    "RBF (C=10, g=0.1)",
-    "Polinomial (C=1, d=3)"
-  ),
-  Acc_Train = c(
-    round(cm_lineal_train$overall["Accuracy"], 4),
-    round(cm_rbf1_train$overall["Accuracy"],   4),
-    round(cm_rbf2_train$overall["Accuracy"],   4),
-    round(cm_poly_train$overall["Accuracy"],   4)
-  ),
-  Acc_Test = c(
-    round(cm_lineal_test$overall["Accuracy"],  4),
-    round(cm_rbf1_test$overall["Accuracy"],    4),
-    round(cm_rbf2_test$overall["Accuracy"],    4),
-    round(cm_poly_test$overall["Accuracy"],    4)
+Para comparar los modelos se utiliza un conjunto de métricas complementarias. El **Accuracy** mide la proporción de clasificaciones correctas en general, pero puede ser engañoso en clases desbalanceadas. El **Kappa de Cohen** corrige el acuerdo por azar y es más robusto para comparar clasificadores multiclase. El **F1 macro** promedia el F1 de cada clase sin ponderar por su tamaño, penalizando a los modelos que sacrifican clases minoritarias. RMSE y MAE no aplican aquí porque son métricas de error continuo, propias de problemas de regresión; en clasificación, la pérdida se mide con estas métricas discretas basadas en la tabla de contingencia.
+
+```{r funcion_metricas, echo=FALSE, warning=FALSE}
+# Función para extraer métricas consolidadas de un confusionMatrix
+extraer_metricas <- function(cm_train, cm_test, nombre) {
+  f1_macro_test  <- mean(cm_test$byClass[, "F1"],  na.rm = TRUE)
+  f1_macro_train <- mean(cm_train$byClass[, "F1"], na.rm = TRUE)
+  data.frame(
+    Modelo        = nombre,
+    Acc_Train     = round(cm_train$overall["Accuracy"], 4),
+    Acc_Test      = round(cm_test$overall["Accuracy"],  4),
+    Kappa_Test    = round(cm_test$overall["Kappa"],     4),
+    F1_Macro_Test = round(f1_macro_test,                4),
+    Diferencia    = round(cm_train$overall["Accuracy"] - cm_test$overall["Accuracy"], 4)
   )
-)
-
-resumen$Diferencia <- round(resumen$Acc_Train - resumen$Acc_Test, 4)
-
-knitr::kable(resumen,
-             caption = "Comparación de Accuracy entre Modelos SVM (Entrenamiento vs Prueba)",
-             col.names = c("Modelo", "Accuracy Entrena.", "Accuracy Prueba", "Diferencia (Sobreajuste)"))
+}
 ```
 
-```{r grafico_comparacion, echo=FALSE, warning=FALSE, fig.width=9, fig.height=5}
-resumen_long <- resumen %>%
-  select(Modelo, Acc_Train, Acc_Test) %>%
-  pivot_longer(cols = c(Acc_Train, Acc_Test),
-               names_to = "Conjunto", values_to = "Accuracy") %>%
-  mutate(Conjunto = ifelse(Conjunto == "Acc_Train", "Entrenamiento", "Prueba"))
+```{r comparacion_modelos, echo=FALSE, warning=FALSE}
+resumen <- bind_rows(
+  extraer_metricas(cm_lineal_train, cm_lineal_test, "Lineal (C=1)"),
+  extraer_metricas(cm_rbf1_train,   cm_rbf1_test,   "RBF (C=1, γ=0.01)"),
+  extraer_metricas(cm_rbf2_train,   cm_rbf2_test,   "RBF (C=10, γ=0.1)"),
+  extraer_metricas(cm_poly_train,   cm_poly_test,   "Polinomial (C=1, d=3)")
+)
 
-ggplot(resumen_long, aes(x = Modelo, y = Accuracy, fill = Conjunto)) +
+knitr::kable(resumen,
+  caption   = "Comparación de métricas entre modelos SVM (conjunto de prueba)",
+  col.names = c("Modelo", "Accuracy Train", "Accuracy Test",
+                "Kappa", "F1 Macro", "Δ Sobreajuste"),
+  row.names = FALSE
+)
+```
+
+```{r grafico_comparacion, echo=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+# Gráfico de barras: F1 Macro y Kappa en prueba por modelo
+resumen_long <- resumen %>%
+  select(Modelo, Kappa_Test, F1_Macro_Test) %>%
+  pivot_longer(cols = c(Kappa_Test, F1_Macro_Test),
+               names_to = "Metrica", values_to = "Valor") %>%
+  mutate(Metrica = recode(Metrica,
+    "Kappa_Test"    = "Kappa de Cohen",
+    "F1_Macro_Test" = "F1 Macro"))
+
+ggplot(resumen_long, aes(x = Modelo, y = Valor, fill = Metrica)) +
   geom_bar(stat = "identity", position = "dodge", width = 0.6) +
-  geom_text(aes(label = scales::percent(Accuracy, accuracy = 0.1)),
-            position = position_dodge(width = 0.6), vjust = -0.5, size = 3) +
-  scale_fill_manual(values = c("Entrenamiento" = "#2A9D8F", "Prueba" = "#E63946")) +
-  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.05)) +
+  geom_text(aes(label = round(Valor, 3)),
+            position = position_dodge(width = 0.6), vjust = -0.5, size = 3.2) +
+  scale_fill_manual(values = c("Kappa de Cohen" = "#2A9D8F", "F1 Macro" = "#E76F51")) +
+  scale_y_continuous(limits = c(0, 1.05)) +
   labs(
-    title = "Accuracy por Modelo SVM: Entrenamiento vs. Prueba",
-    x = "Modelo", y = "Accuracy", fill = "Conjunto"
+    title    = "Rendimiento en Prueba por Modelo SVM",
+    subtitle = "Kappa de Cohen y F1 Macro como métricas principales de clasificación multiclase",
+    x = "Modelo", y = "Valor", fill = "Métrica"
   ) +
   theme_minimal(base_size = 11) +
   theme(axis.text.x = element_text(angle = 15, hjust = 1))
@@ -380,7 +461,7 @@ set.seed(123)
 tune_result <- tune(
   svm,
   categoria_precio ~ .,
-  data   = train_scaled,
+  data   = train_svm_s,
   kernel = "radial",
   scale  = FALSE,
   ranges = list(
@@ -397,19 +478,27 @@ cat("\nError de validación cruzada del mejor modelo:", round(tune_result$best.p
 # Modelo final con los mejores parámetros
 modelo_svm_tuned <- tune_result$best.model
 
-pred_tuned_train <- predict(modelo_svm_tuned, train_scaled)
+pred_tuned_train <- predict(modelo_svm_tuned, train_svm_s)
 pred_tuned_test  <- predict(modelo_svm_tuned, test_scaled)
 
-cm_tuned_train <- confusionMatrix(pred_tuned_train, train_scaled$categoria_precio)
+cm_tuned_train <- confusionMatrix(pred_tuned_train, train_svm_s$categoria_precio)
 cm_tuned_test  <- confusionMatrix(pred_tuned_test,  test_scaled$categoria_precio)
 
 cat("\nAccuracy entrenamiento (modelo tuneado):", round(cm_tuned_train$overall["Accuracy"], 4), "\n")
 cat("Accuracy prueba       (modelo tuneado):", round(cm_tuned_test$overall["Accuracy"],  4), "\n")
+cat("Kappa prueba          (modelo tuneado):", round(cm_tuned_test$overall["Kappa"],     4), "\n")
+cat("F1 Macro prueba       (modelo tuneado):", round(mean(cm_tuned_test$byClass[,"F1"], na.rm=TRUE), 4), "\n")
+```
 
-cat("\n--- Matriz de Confusión en PRUEBA — Modelo Tuneado ---\n")
-print(cm_tuned_test$table)
-cat("\nMétricas por clase:\n")
-print(round(cm_tuned_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1")], 4))
+```{r cm_tuneado_visual, echo=FALSE, warning=FALSE, fig.width=6, fig.height=4}
+plot_cm(cm_tuned_test, "Matriz de Confusión — Modelo RBF Tuneado")
+```
+
+```{r metricas_tuneado, echo=FALSE, warning=FALSE}
+knitr::kable(
+  round(cm_tuned_test$byClass[, c("Sensitivity", "Specificity", "Precision", "F1", "Balanced Accuracy")], 4),
+  caption = "Métricas por clase — Modelo RBF Tuneado"
+)
 ```
 
 El tuneo automático explora sistemáticamente combinaciones de `C` ∈ {0.1, 1, 5, 10} y `gamma` ∈ {0.001, 0.01, 0.05, 0.1}. La combinación que minimiza el error de validación cruzada representa el mejor equilibrio entre sesgo y varianza encontrado dentro de la grilla definida. El modelo resultante se evalúa sobre el conjunto de prueba — datos que no participaron en el proceso de tuneo — para obtener una estimación honesta de su rendimiento real.
@@ -420,7 +509,7 @@ El tuneo automático explora sistemáticamente combinaciones de `C` ∈ {0.1, 1,
 
 El análisis mediante Máquinas de Vectores de Soporte confirma que los datos de SmartStay Advisors presentan fronteras de decisión no lineales entre las categorías de precio. El kernel lineal, aunque interpretable, resulta insuficiente para capturar la complejidad del problema, mientras que los kernels RBF y polinomial ofrecen mayor capacidad expresiva a costa de un mayor riesgo de sobreajuste si sus hiperparámetros no se controlan adecuadamente.
 
-El modelo RBF con tuneo automático surge como la alternativa más robusta, al equilibrar la flexibilidad del kernel con una búsqueda sistemática de los hiperparámetros óptimos mediante validación cruzada. La categoría "Intermedia" sigue siendo la más difícil de clasificar correctamente en todos los modelos, un comportamiento consistente con los laboratorios anteriores que refleja la naturaleza difusa de su separación respecto a las categorías extremas.
+El modelo RBF con tuneo automático surge como la alternativa más robusta, al equilibrar la flexibilidad del kernel con una búsqueda sistemática de los hiperparámetros óptimos mediante validación cruzada. La categoría "Intermedia" sigue siendo la más difícil de clasificar correctamente en todos los modelos, un comportamiento consistente con los algoritmos anteriores que refleja la naturaleza difusa de su separación respecto a las categorías extremas.
 
-En comparación con la regresión logística multiclase del laboratorio anterior (accuracy ~58%), los modelos SVM con kernel RBF demuestran una mejora notable en la capacidad de discriminar entre las tres categorías de precio, consolidando su utilidad como herramienta de clasificación para la consultoría de SmartStay Advisors.
+En comparación con la regresión logística multiclase del informe anterior (accuracy ~58%), los modelos SVM con kernel RBF demuestran una mejora notable en la capacidad de discriminar entre las tres categorías de precio, consolidando su utilidad como herramienta de clasificación para la consultoría de SmartStay Advisors.
 ```
