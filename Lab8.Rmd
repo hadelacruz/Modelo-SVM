@@ -76,7 +76,8 @@ Los modelos de Máquinas de Vectores de Soporte son altamente sensibles a la esc
 
 ```{r exploracion_transformacion, echo=FALSE, warning=FALSE}
 # Variables seleccionadas para el modelo SVM
-vars_svm <- c("accommodates", "bedrooms", "bathrooms", "beds",
+vars_svm <- c("price",
+              "accommodates", "bedrooms", "bathrooms", "beds",
               "review_scores_rating", "review_scores_location",
               "availability_365", "minimum_nights",
               "number_of_reviews", "reviews_per_month",
@@ -628,3 +629,172 @@ ggplot(df_long_ajuste, aes(x = Fase, y = Accuracy, group = Modelo, color = Model
 
 Al observar el comportamiento histórico, el modelo KNN y el modelo SVM RBF con alto costo (C=10) son los que muestran mayor evidencia de sobreajuste, con caídas de rendimiento significativas al pasar a datos no vistos. La regularización mediante parámetros menos restrictivos (como C=1 en el Kernel Lineal) y la robustez propia del ensamblado en el Random Forest fueron fundamentales para mantener la estabilidad entre las fases de entrenamiento y prueba.
 
+
+## Modelo de Regresión con SVR
+
+```{r modelo_regresion, echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+set.seed(123)
+
+# Convertir todos los factores a numérico para evitar problemas de niveles
+to_numeric_df <- function(df) {
+  df_out <- df
+  for (col in names(df_out)) {
+    if (is.factor(df_out[[col]]) || is.character(df_out[[col]])) {
+      df_out[[col]] <- as.numeric(as.factor(df_out[[col]]))
+    }
+  }
+  df_out
+}
+
+train_reg_full <- to_numeric_df(train %>% select(-categoria_precio) %>% drop_na())
+test_reg_full  <- to_numeric_df(test  %>% select(-categoria_precio) %>% drop_na())
+
+set.seed(123)
+train_reg <- train_reg_full[sample(1:nrow(train_reg_full), 2000), ]
+test_reg  <- test_reg_full[sample(1:nrow(test_reg_full), min(2000, nrow(test_reg_full))), ]
+
+svr_model <- svm(
+  price ~ .,
+  data   = train_reg,
+  type   = "eps-regression",
+  kernel = "radial",
+  cost   = 1,
+  gamma  = 0.1
+)
+
+pred_svr_train <- predict(svr_model, train_reg)
+pred_svr_test  <- predict(svr_model, test_reg)
+```
+
+## Métricas del Modelo SVR
+
+```{r metrica_modelo, echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+rmse_train <- sqrt(mean((pred_svr_train - train_reg$price)^2))
+rmse_test  <- sqrt(mean((pred_svr_test  - test_reg$price)^2))
+
+mae_train <- mean(abs(pred_svr_train - train_reg$price))
+mae_test  <- mean(abs(pred_svr_test  - test_reg$price))
+
+r2_train <- cor(pred_svr_train, train_reg$price)^2
+r2_test  <- cor(pred_svr_test,  test_reg$price)^2
+
+resultados_svr <- data.frame(
+  Conjunto = c("Entrenamiento", "Prueba"),
+  RMSE = c(rmse_train, rmse_test),
+  MAE  = c(mae_train, mae_test),
+  R2   = c(r2_train, r2_test)
+)
+
+resultados_svr[, -1] <- round(resultados_svr[, -1], 4)
+
+knitr::kable(
+  resultados_svr,
+  caption = "Métricas del modelo SVR"
+)
+```
+
+## Gráfica Predicción vs Real
+
+```{r grafica, echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+plot(test_reg$price, pred_svr_test,
+     xlab = "Precio Real",
+     ylab = "Precio Predicho",
+     main = "SVR: Predicción vs Real")
+abline(0, 1)
+```
+
+## Comparación con Modelos de Regresión
+
+```{r comparacion_reg, echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+library(rpart)
+library(FNN)
+
+# Todos los datos ya son numéricos, no hay conflicto de factores
+modelo_lineal <- lm(price ~ ., data = train_reg)
+modelo_tree   <- rpart(price ~ ., data = train_reg)
+
+pred_lm   <- predict(modelo_lineal, test_reg)
+pred_tree <- predict(modelo_tree,   test_reg)
+
+pred_knn <- knn.reg(
+  train = train_reg[, -which(names(train_reg) == "price")],
+  test  = test_reg[,  -which(names(test_reg)  == "price")],
+  y     = train_reg$price,
+  k     = 5
+)$pred
+
+rmse_lm   <- sqrt(mean((pred_lm   - test_reg$price)^2))
+rmse_tree <- sqrt(mean((pred_tree - test_reg$price)^2))
+rmse_knn  <- sqrt(mean((pred_knn  - test_reg$price)^2))
+
+mae_lm   <- mean(abs(pred_lm   - test_reg$price))
+mae_tree <- mean(abs(pred_tree - test_reg$price))
+mae_knn  <- mean(abs(pred_knn  - test_reg$price))
+
+tabla_reg <- data.frame(
+  Modelo = c("Regresión Lineal", "Árbol", "KNN", "SVR"),
+  RMSE   = c(rmse_lm, rmse_tree, rmse_knn, rmse_test),
+  MAE    = c(mae_lm,  mae_tree,  mae_knn,  mae_test)
+)
+
+tabla_reg[, -1] <- round(tabla_reg[, -1], 4)
+
+knitr::kable(tabla_reg, caption = "Comparación de modelos de regresión")
+```
+
+## Análisis
+
+El modelo SVR con kernel radial entrenado sobre una muestra de 2,000 registros
+mostró un desempeño moderado en la tarea de regresión. En el conjunto de
+entrenamiento se obtuvo un RMSE de 1,908.96 y un R² de 0.1613, lo que indica
+que el modelo captura apenas el 16% de la varianza del precio. Al evaluar sobre
+el conjunto de prueba, el RMSE aumenta a 2,326.82 y el R² cae a 0.0161,
+evidenciando un claro sobreajuste: el modelo no logra generalizar bien a datos
+no vistos.
+
+Al comparar con los demás modelos de regresión, el SVR obtuvo el RMSE más alto
+(2,326.82), superado en precisión por el Árbol de Decisión (2,032.13) y la
+Regresión Lineal (2,280.62). Sin embargo, en términos de MAE, el SVR registró el
+valor más bajo (292.90), lo que sugiere que, si bien comete errores grandes en
+casos extremos, sus predicciones típicas se desvían menos del precio real en
+comparación con los demás modelos.
+
+El Árbol de Decisión fue el mejor modelo en RMSE y MAE simultáneamente
+(2,032.13 y 325.90 respectivamente), mientras que KNN presentó el peor RMSE
+después del SVR (2,291.39), aunque con un MAE intermedio (341.68). La Regresión
+Lineal se ubicó en una posición central en ambas métricas.
+
+La brecha entre el R² de entrenamiento (0.1613) y prueba (0.0161) confirma que
+el SVR sobreajustó los datos de entrenamiento. Esto puede atribuirse a la alta
+dimensionalidad y la presencia de variables categóricas codificadas como enteros,
+que introducen ruido y relaciones artificiales. Una búsqueda de hiperparámetros
+más fina (ajuste de C, gamma y epsilon) junto con una selección de variables más
+cuidadosa podría mejorar la capacidad de generalización del modelo.
+
+## Conclusión
+
+El análisis integral del laboratorio permitió comparar el rendimiento de SVM en
+tareas de clasificación y de SVR en tareas de regresión aplicadas al conjunto de
+datos de SmartStay Advisors.
+
+En clasificación, el **Kernel Lineal** demostró ser el modelo más equilibrado con
+una exactitud de prueba del 78.91% y la menor brecha de sobreajuste, mientras
+que el SVM RBF con C=10 alcanzó la mayor exactitud en entrenamiento (83.6%) pero
+con una caída importante al pasar a prueba (69.65%), confirmando que una
+regularización más estricta no necesariamente mejora la generalización. El modelo
+tuneado (RBF, C óptimo) logró un balance razonable entre ambas fases con un
+70.15% en prueba.
+
+En regresión, ningún modelo alcanzó un desempeño sobresaliente, lo que refleja
+la naturaleza compleja y ruidosa de la variable `price`. El **Árbol de Decisión**
+fue el mejor modelo global en RMSE y MAE, mientras que el **SVR** fue competitivo
+en MAE pero limitado en R², indicando dificultades para explicar la varianza del
+precio. Esto sugiere que las variables disponibles no son suficientes por sí solas
+para predecir el precio con alta precisión y que se requeriría ingeniería de
+características adicional o modelos ensemble más robustos como Random Forest o
+Gradient Boosting para mejorar los resultados en esta tarea.
+
+El laboratorio evidenció que las Máquinas de Vectores de Soporte son
+herramientas potentes para clasificación con datos bien estructurados, pero
+requieren una cuidadosa selección de hiperparámetros y preprocesamiento para
+rendir adecuadamente en problemas de regresión con alta variabilidad.
